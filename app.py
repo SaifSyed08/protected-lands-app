@@ -1,55 +1,77 @@
 import streamlit as st
 import pandas as pd
 import requests
+import numpy as np
 from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import StandardScaler
+import pydeck as pdk
 
 st.set_page_config("Find Similar Protected Lands", layout="wide")
 st.title("🛰️ Compare Your Location to Protected Lands")
 
-# 1) Upload & parse user CSV
+# 1) Upload CSV
 uploaded = st.file_uploader("Upload a CSV with latitude,longitude in the first row", type="csv")
 if not uploaded:
     st.warning("Please upload a CSV to continue.")
     st.stop()
 
 df_user = pd.read_csv(uploaded)
-lat, lon = df_user.iloc[0, 0], df_user.iloc[0, 1]
+# Make sure your uploaded CSV has these headers:
+# latitude, longitude
+df_user.columns = [col.lower() for col in df_user.columns]  # normalize casing
 
-# 2) Cached fetch for 30‑yr climate normals
+if not {"latitude", "longitude"}.issubset(df_user.columns):
+    st.error("Your CSV must include 'latitude' and 'longitude' columns.")
+    st.stop()
+
+lat, lon = df_user.loc[0, "latitude"], df_user.loc[0, "longitude"]
+
+
+# 2) Fetch climate with error handling
 @st.cache_data(show_spinner=False)
 def fetch_climate(latitude: float, longitude: float):
     params = {
-        "latitude": latitude,
-        "longitude": longitude,
+        "latitude": float(latitude),
+        "longitude": float(longitude),
         "start_date": "1991-01-01",
-        "end_date":   "2020-12-31",
-        "daily":     ["temperature_2m_mean", "precipitation_sum"],
+        "end_date": "2020-12-31",
+        "daily": "temperature_2m_mean,precipitation_sum",
         "temperature_unit": "celsius",
         "precipitation_unit": "mm"
     }
-    r = requests.get("https://climate-api.open-meteo.com/v1/climate", params=params).json()
-    temps = r["daily"]["temperature_2m_mean"]
-    prec  = r["daily"]["precipitation_sum"]
-    avg_t = sum(temps) / len(temps)
-    avg_p = sum(prec) 
-    return avg_t, avg_p
+    try:
+        r = requests.get("https://climate-api.open-meteo.com/v1/climate", params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        daily = data.get("daily", {})
+        temps = daily.get("temperature_2m_mean", [])
+        precs = daily.get("precipitation_sum", [])
+        if not temps or not precs:
+            return np.nan, np.nan
+        return float(np.mean(temps)), float(np.sum(precs))
+    except Exception as e:
+        st.error(f"Climate API error: {e}")
+        return np.nan, np.nan
 
-# 3) Cached fetch for elevation
+# 3) Fetch elevation safely
 @st.cache_data(show_spinner=False)
 def fetch_elevation(latitude: float, longitude: float):
-    r = requests.get(
-        "https://api.open-meteo.com/v1/elevation",
-        params={"latitude": latitude, "longitude": longitude}
-    ).json()
-    return r.get("elevation", None)
+    try:
+        r = requests.get("https://api.open-meteo.com/v1/elevation", params={"latitude": latitude, "longitude": longitude}, timeout=30)
+        data = r.json()
+        elev = data.get("elevation")
+        if isinstance(elev, list):
+            return float(elev[0])
+        return float(elev)
+    except Exception as e:
+        st.error(f"Elevation API error: {e}")
+        return np.nan
 
-# … after your cached fetch_elevation call …
+# 4) Run fetches
 avg_temp, avg_precip = fetch_climate(lat, lon)
 elevation = fetch_elevation(lat, lon)
-
-# if elevation is accidentally a list, grab the first element
-if isinstance(elevation, list):
-    elevation = float(elevation[0])
+if np.isnan(avg_temp) or np.isnan(avg_precip) or np.isnan(elevation):
+    st.stop()
 
 st.markdown(
     f"**Your location’s 30 yr avg temp:** {avg_temp:.1f} °C  •  "
@@ -57,23 +79,15 @@ st.markdown(
     f"**elevation:** {elevation:.0f} m"
 )
 
-# 5) Load protected‑lands data
-df_pl = pd.read_csv("protected_lands.csv")  # expects columns: lat, lon, avg_temp, avg_precip, elevation
-features = ["annual_temp_c", "annual_precip_mm", "elevation_m"]# 5) Load & clean protected‑lands data
+# 5) Load & clean protected lands
 df_pl = pd.read_csv("protected_lands.csv")
 features = ["annual_temp_c", "annual_precip_mm", "elevation_m"]
-
-#from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import StandardScaler
-
-# 6) Drop NaNs
 df_pl = df_pl.dropna(subset=features)
 
-# 7) Scale the feature space (Z‑score normalization)
+# 6) Normalize features and fit neighbors
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df_pl[features])
 
-# 8) Fit neighbors on the scaled data
 nn = NearestNeighbors(n_neighbors=3, metric="euclidean")
 nn.fit(X_scaled)
 
@@ -84,16 +98,13 @@ dists, idxs = nn.kneighbors(input_scaled)
 top3 = df_pl.iloc[idxs[0]].copy()
 top3["distance"] = dists[0]
 
-# 8) Display the table (using the new names)
+# 7) Show results
 st.subheader("Top 3 Similar Protected Lands")
 st.table(top3[["NAME", "lat", "lon", "annual_temp_c", "annual_precip_mm", "elevation_m", "AREA_KM2", "distance"]])
 
-import pydeck as pdk
-
+# 8) Visualize on map with radius = √area
 map_df = top3.rename(columns={"lat": "latitude", "lon": "longitude"})
-
-# Add a radius column using sqrt of AREA_KM2 * 1000 for visibility
-map_df["radius"] = map_df["AREA_KM2"].apply(lambda x: (x**0.5) * 1000)
+map_df["radius"] = map_df["AREA_KM2"].apply(lambda x: (x ** 0.5) * 1000)
 
 layer = pdk.Layer(
     "ScatterplotLayer",
@@ -112,4 +123,10 @@ view_state = pdk.ViewState(
     pitch=0
 )
 
-st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip={"text": "{NAME}\n{AREA_KM2} km²"}))
+st.pydeck_chart(
+    pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        tooltip={"text": "{NAME}\n{AREA_KM2} km²"}
+    )
+)

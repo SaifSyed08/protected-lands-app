@@ -31,8 +31,6 @@ if not uploaded:
 
 # Read user CSV
 df_user = pd.read_csv(uploaded)
-st.write("Uploaded CSV preview:")
-st.dataframe(df_user.head())
 
 # Extract latitude/longitude from user CSV
 latitude = float(df_user.iloc[0]["latitude"])

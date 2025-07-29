@@ -96,13 +96,13 @@ def fetch_ee_ndvi_et_series(lat_val, lon_val):
         ndvi_dict = ndvi_img.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=point,
-            scale=250,
+            scale=3000,
             maxPixels=1e9
         ).getInfo()
         et_dict   = et_img.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=point,
-            scale=500,
+            scale=3000,
             maxPixels=1e9
         ).getInfo()
 
@@ -132,7 +132,7 @@ def fetch_ee_lst_gpp_series(lat_val: float, lon_val: float):
               .reduceRegion(
                   reducer=ee.Reducer.mean(),
                   geometry=point,
-                  scale=1000,         # named
+                  scale=3000,         # named
                   maxPixels=1e9       # named
               )
         )
@@ -145,7 +145,7 @@ def fetch_ee_lst_gpp_series(lat_val: float, lon_val: float):
               .reduceRegion(
                   reducer=ee.Reducer.mean(),
                   geometry=point,
-                  scale=500,          # named
+                  scale=3000,          # named
                   maxPixels=1e9       # named
               )
         )
@@ -198,23 +198,28 @@ st.markdown(
 df_pl = pd.read_csv("protected_lands.csv")
 features = ["annual_temp_c", "annual_precip_mm", "elevation_m"]
 df_pl = df_pl.dropna(subset=features)
-
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df_pl[features])
-nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
+nn = NearestNeighbors(n_neighbors=3, metric="euclidean")
 nn.fit(X_scaled)
 
 input_scaled = scaler.transform(
     pd.DataFrame([[avg_temp, avg_precip, elevation]], columns=features)
 )
 dist, idx = nn.kneighbors(input_scaled)
-best = df_pl.iloc[idx[0][0]].copy()
-best["distance"] = dist[0][0]
 
-st.subheader("Best Similar Protected Land")
-st.table(pd.DataFrame([best])[['NAME', 'lat', 'lon'] + features + ['AREA_KM2', 'distance']])
+# Get top 3 similar protected areas
+top3 = df_pl.iloc[idx[0]].copy()
+top3["distance"] = dist[0]
 
-# Map visualization of best area
+# Define 'best' as the top match
+best = top3.iloc[0]
+
+# Display all top 3
+st.subheader("Top 3 Similar Protected Lands")
+st.table(top3[['NAME', 'lat', 'lon'] + features + ['AREA_KM2', 'distance']])
+
+# Map visualization of the best one only
 map_df = pd.DataFrame([best]).rename(columns={"lat": "latitude", "lon": "longitude"})
 map_df["radius"] = map_df["AREA_KM2"].apply(lambda x: (x ** 0.5) * 1000)
 layer = pdk.Layer(

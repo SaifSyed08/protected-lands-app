@@ -6,3 +6,4 @@ scikit-learn
 pydeck
 boto3
 h5py
+earthengine-api

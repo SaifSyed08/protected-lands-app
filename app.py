@@ -3,40 +3,39 @@ import pandas as pd
 import requests
 import numpy as np
 import datetime
-from io import BytesIO
+import os
+import json
+import tempfile
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 import pydeck as pdk
+import ee
 
-# Attempt to import boto3 for AWS S3 access
-try:
-    import boto3
-except ImportError:
-    boto3 = None
+# Initialize Earth Engine using temporary credentials file
+if not ee.data._initialized:
+    service_account = st.secrets.get("GEE_SERVICE_ACCOUNT")
+    key_dict = json.loads(st.secrets.get("GEE_PRIVATE_KEY"))
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:
+        json.dump(key_dict, tmp_file)
+        tmp_file.flush()
+        credentials = ee.ServiceAccountCredentials(service_account, tmp_file.name)
+        ee.Initialize(credentials)
 
-# Attempt to import h5py for HDF parsing
-try:
-    import h5py
-except ImportError:
-    h5py = None
-
+# Page configuration
 st.set_page_config("Find Similar Protected Lands", layout="wide")
 st.title("🛰️ Compare Your Location to Protected Lands")
 
-# 1) Upload CSV
+# CSV upload
 uploaded = st.file_uploader("Upload a CSV with columns latitude, longitude in the first row", type="csv")
 if not uploaded:
     st.warning("Please upload a CSV to continue.")
     st.stop()
 
-# Read user CSV
 df_user = pd.read_csv(uploaded)
-
-# Extract latitude/longitude from user CSV
 latitude = float(df_user.iloc[0]["latitude"])
 longitude = float(df_user.iloc[0]["longitude"])
 
-# 2) Fetch climate with error handling
+# Fetch 30-year climate averages
 @st.cache_data(show_spinner=False)
 def fetch_climate(lat_val: float, lon_val: float):
     params = {
@@ -51,18 +50,15 @@ def fetch_climate(lat_val: float, lon_val: float):
     try:
         r = requests.get("https://climate-api.open-meteo.com/v1/climate", params=params, timeout=30)
         r.raise_for_status()
-        data = r.json()
-        daily = data.get("daily", {})
-        temps = daily.get("temperature_2m_mean", [])
-        precs = daily.get("precipitation_sum", [])
-        if not temps or not precs:
-            return np.nan, np.nan
+        data = r.json().get("daily", {})
+        temps = data.get("temperature_2m_mean", [])
+        precs = data.get("precipitation_sum", [])
         return float(np.mean(temps)), float(np.sum(precs))
     except Exception as e:
         st.error(f"Climate API error: {e}")
         return np.nan, np.nan
 
-# 3) Fetch elevation safely
+# Fetch elevation
 @st.cache_data(show_spinner=False)
 def fetch_elevation(lat_val: float, lon_val: float):
     try:
@@ -72,56 +68,155 @@ def fetch_elevation(lat_val: float, lon_val: float):
             timeout=30
         )
         r.raise_for_status()
-        data = r.json()
-        elev = data.get("elevation")
-        if isinstance(elev, list):
-            return float(elev[0])
-        return float(elev)
+        elev = r.json().get("elevation")
+        return float(elev[0] if isinstance(elev, list) else elev)
     except Exception as e:
         st.error(f"Elevation API error: {e}")
         return np.nan
 
-# 4) Run fetches
+def fetch_ee_ndvi_et_series(lat_val, lon_val):
+    point = ee.Geometry.Point([lon_val, lat_val])
+    years = list(range(2002, 2023))
+    ndvi_vals = []
+    et_vals = []
+
+    for year in years:
+        start, end = f"{year}-06-01", f"{year}-06-30"
+        # build composites:
+        ndvi_img = (ee.ImageCollection("MODIS/006/MOD13Q1")
+                    .filterDate(start, end)
+                    .select("NDVI")
+                    .mean())
+        et_img   = (ee.ImageCollection("MODIS/006/MOD16A2")
+                    .filterDate(start, end)
+                    .select("ET")
+                    .mean())
+
+        # pull the raw reduceRegion dicts:
+        ndvi_dict = ndvi_img.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=point,
+            scale=250,
+            maxPixels=1e9
+        ).getInfo()
+        et_dict   = et_img.reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=point,
+            scale=500,
+            maxPixels=1e9
+        ).getInfo()
+
+        # safely extract (or np.nan)
+        raw_ndvi = ndvi_dict.get("NDVI")
+        raw_et   = et_dict.get("ET")
+        ndvi_vals.append(raw_ndvi   / 10000.0 if raw_ndvi is not None else np.nan)
+        et_vals.append( raw_et     /    8.0 if raw_et   is not None else np.nan)
+
+    return pd.DataFrame({"year": years, "NDVI": ndvi_vals, "ET": et_vals})
+
+@st.cache_data
+def fetch_ee_lst_gpp_series(lat_val: float, lon_val: float):
+    point     = ee.Geometry.Point([lon_val, lat_val])
+    years     = list(range(2002, 2023))
+    lst_elems = []
+    gpp_elems = []
+
+    for year in years:
+        start, end = f"{year}-06-01", f"{year}-06-30"
+
+        lst_dict = (
+            ee.ImageCollection("MODIS/006/MOD11A2")
+              .filterDate(start, end)
+              .select("LST_Day_1km")
+              .mean()
+              .reduceRegion(
+                  reducer=ee.Reducer.mean(),
+                  geometry=point,
+                  scale=1000,         # named
+                  maxPixels=1e9       # named
+              )
+        )
+
+        gpp_dict = (
+            ee.ImageCollection("MODIS/006/MOD17A2H")
+              .filterDate(start, end)
+              .select("Gpp")
+              .mean()
+              .reduceRegion(
+                  reducer=ee.Reducer.mean(),
+                  geometry=point,
+                  scale=500,          # named
+                  maxPixels=1e9       # named
+              )
+        )
+
+        safe_lst = ee.Algorithms.If(
+            ee.Dictionary(lst_dict).contains("LST_Day_1km"),
+            ee.Dictionary(lst_dict)
+              .getNumber("LST_Day_1km")
+              .multiply(0.02)
+              .subtract(273.15),
+            ee.Number(0)
+        )
+        safe_gpp = ee.Algorithms.If(
+            ee.Dictionary(gpp_dict).contains("Gpp"),
+            ee.Dictionary(gpp_dict).getNumber("Gpp"),
+            ee.Number(0)
+        )
+
+        lst_elems.append(ee.Number(safe_lst))
+        gpp_elems.append(ee.Number(safe_gpp))
+
+    lst_vals = ee.List(lst_elems).getInfo()
+    gpp_vals = ee.List(gpp_elems).getInfo()
+
+    df = pd.DataFrame({
+        "year": years,
+        "LST_C (°C)": lst_vals,
+        "GPP_gCm2_8day": gpp_vals
+    })
+    df.replace(0, np.nan, inplace=True)
+    return df
+
+
+
+
+
+# Compute and display local stats
 avg_temp, avg_precip = fetch_climate(latitude, longitude)
 elevation = fetch_elevation(latitude, longitude)
 if np.isnan(avg_temp) or np.isnan(avg_precip) or np.isnan(elevation):
     st.stop()
 
-# Display summary
 st.markdown(
     f"**Your location’s 30 yr avg temp:** {avg_temp:.1f} °C  •  "
     f"**total precip:** {avg_precip:.0f} mm  •  "
     f"**elevation:** {elevation:.0f} m"
 )
 
-# 5) Load & clean protected lands
+# Load protected lands and find nearest neighbor
 df_pl = pd.read_csv("protected_lands.csv")
 features = ["annual_temp_c", "annual_precip_mm", "elevation_m"]
 df_pl = df_pl.dropna(subset=features)
 
-# 6) Normalize features and fit neighbors
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df_pl[features])
-nn = NearestNeighbors(n_neighbors=3, metric="euclidean")
+nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
 nn.fit(X_scaled)
 
-# 7) Query nearest neighbors
-input_df = pd.DataFrame([[avg_temp, avg_precip, elevation]], columns=features)
-input_scaled = scaler.transform(input_df)
-dists, idxs = nn.kneighbors(input_scaled)
+input_scaled = scaler.transform(
+    pd.DataFrame([[avg_temp, avg_precip, elevation]], columns=features)
+)
+dist, idx = nn.kneighbors(input_scaled)
+best = df_pl.iloc[idx[0][0]].copy()
+best["distance"] = dist[0][0]
 
-# 8) Prepare top3 results
-top3 = df_pl.iloc[idxs[0]].copy()
-top3["distance"] = dists[0]
+st.subheader("Best Similar Protected Land")
+st.table(pd.DataFrame([best])[['NAME', 'lat', 'lon'] + features + ['AREA_KM2', 'distance']])
 
-# 9) Display results
-st.subheader("Top 3 Similar Protected Lands")
-st.table(top3[["NAME", "lat", "lon"] + features + ["AREA_KM2", "distance"]])
-
-# 10) Map visualization
-map_df = top3.rename(columns={"lat": "latitude", "lon": "longitude"})
+# Map visualization of best area
+map_df = pd.DataFrame([best]).rename(columns={"lat": "latitude", "lon": "longitude"})
 map_df["radius"] = map_df["AREA_KM2"].apply(lambda x: (x ** 0.5) * 1000)
-
 layer = pdk.Layer(
     "ScatterplotLayer",
     data=map_df,
@@ -131,80 +226,90 @@ layer = pdk.Layer(
     pickable=True,
     auto_highlight=True
 )
-
 view_state = pdk.ViewState(
     latitude=map_df["latitude"].mean(),
     longitude=map_df["longitude"].mean(),
     zoom=4,
     pitch=0
 )
-
 st.pydeck_chart(
-    pdk.Deck(
-        layers=[layer],
-        initial_view_state=view_state,
-        tooltip={"text": "{NAME}\n{AREA_KM2} km²"}
-    )
+    pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip={"text": "{NAME}\n{AREA_KM2} km²"})
 )
 
-# 11) HDF parsing helper
-def parse_hdf_for_point(stream_body, lat_val, lon_val, metric):
-    if h5py is None:
-        st.error("h5py is not installed. Please add h5py to your requirements.")
-        return np.nan
-    try:
-        data_bytes = stream_body.read()
-        with h5py.File(BytesIO(data_bytes), 'r') as f:
-            lat_ds = next((ds for ds in f.keys() if 'latitude' in ds.lower()), None)
-            lon_ds = next((ds for ds in f.keys() if 'longitude' in ds.lower()), None)
-            if not lat_ds or not lon_ds:
-                return np.nan
-            lat_arr = f[lat_ds][:]
-            lon_arr = f[lon_ds][:]
-            dist = (lat_arr - lat_val)**2 + (lon_arr - lon_val)**2
-            flat_idx = np.argmin(dist)
-            i, j = np.unravel_index(flat_idx, lat_arr.shape)
-            ds_name = next((ds for ds in f.keys() if metric.lower() in ds.lower()), None)
-            if not ds_name:
-                return np.nan
-            val = f[ds_name][i, j]
-            if 'ndvi' in ds_name.lower() or 'evi' in ds_name.lower():
-                return float(val) * 0.0001
-            return float(val)
-    except Exception:
-        return np.nan
-
-# 12) Time Series Comparison
+# Time Series Comparison using Earth Engine
 st.header("Time Series Comparison")
-metric = st.selectbox("Choose metric", ["NDVI"])
 
-if boto3 is None:
-    st.error("boto3 is not installed. Please add boto3 to your requirements.")
-else:
-    s3 = boto3.client("s3")
+# at the top of your Time Series section, initialize the flags
+if "show_ndvi_et" not in st.session_state:
+    st.session_state.show_ndvi_et = False
+if "show_lst_gpp" not in st.session_state:
+    st.session_state.show_lst_gpp = False
 
-    @st.cache_data(show_spinner=False)
-    def fetch_modis_time_series(lat_val, lon_val, metric):
-        bucket = "modis-pds"
-        current_year = datetime.datetime.now().year
-        years = list(range(current_year - 19, current_year + 1))
-        values = []
-        for year in years:
-            key = f"MOD13Q1/{year}.001.hdf"
-            try:
-                obj = s3.get_object(Bucket=bucket, Key=key)
-                value = parse_hdf_for_point(obj['Body'], lat_val, lon_val, metric)
-            except Exception:
-                value = np.nan
-            values.append(value)
-        return pd.DataFrame({"year": years, metric: values})
+# place your two buttons side by side
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("Show NDVI & ET Time Series"):
+        st.session_state.show_ndvi_et = True
+with col2:
+    if st.button("Show LST & GPP Time Series"):
+        st.session_state.show_lst_gpp = True
 
-    if st.button("Show time series"):
-        st.info(f"Fetching {metric} time series...")
-        df_user_ts = fetch_modis_time_series(latitude, longitude, metric)
-        df_plot = df_user_ts.set_index("year").rename(columns={metric: "Your Location"})
-        for _, row in top3.iterrows():
-            df_pa = fetch_modis_time_series(row["lat"], row["lon"], metric)
-            df_plot[row["NAME"]] = df_pa[metric].values
-        st.subheader(f"{metric} Over Time")
-        st.line_chart(df_plot)
+# now render each chart block only if its flag is set
+if st.session_state.show_ndvi_et:
+    st.header("NDVI & ET Time Series")
+    with st.spinner("Fetching data from Google Earth Engine…"):
+        df_user_ts = fetch_ee_ndvi_et_series(latitude, longitude)
+        df_best_ts = fetch_ee_ndvi_et_series(best["lat"], best["lon"])
+        df_user_ts = df_user_ts.set_index("year")\
+            .rename(columns={"NDVI": "Your NDVI", "ET": "Your ET"})
+        df_best_ts = df_best_ts.set_index("year")\
+            .rename(columns={"NDVI": f"{best['NAME']} NDVI", "ET": f"{best['NAME']} ET"})
+        df = pd.concat([df_user_ts, df_best_ts], axis=1)
+
+    st.subheader("NDVI Over Time")
+    st.markdown("*NDVI (Normalized Difference Vegetation Index) measures green vegetation. Values range from -1 to 1, and higher values generally mean denser, healthier plant life.*")
+    st.line_chart(df[[c for c in df.columns if "NDVI" in c]])
+    st.subheader("ET Over Time")
+    st.markdown("*ET (Evapotranspiration) reflects water loss from soil and plants. Higher ET can indicate more active vegetation and moisture, but also higher water demand.*")
+    st.line_chart(df[[c for c in df.columns if "ET" in c]])
+
+    csv_ndvi_et = df.reset_index().to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download NDVI & ET Data as CSV",
+        data=csv_ndvi_et,
+        file_name="ndvi_et_timeseries.csv",
+        mime="text/csv"
+    )
+
+if st.session_state.show_lst_gpp:
+    st.header("LST & GPP Time Series")
+    with st.spinner("Fetching data from Google Earth Engine…"):
+        df_user2 = fetch_ee_lst_gpp_series(latitude, longitude)\
+            .set_index("year")\
+            .rename(columns={
+                "LST_C (°C)": "Your LST (°C)",
+                "GPP_gCm2_8day": "Your GPP"
+            })
+        df_best2 = fetch_ee_lst_gpp_series(best["lat"], best["lon"])\
+            .set_index("year")\
+            .rename(columns={
+                "LST_C (°C)": f"{best['NAME']} LST (°C)",
+                "GPP_gCm2_8day": f"{best['NAME']} GPP"
+            })
+        df2 = pd.concat([df_user2, df_best2], axis=1)
+
+    st.subheader("Land Surface Temperature Over Time")
+    st.markdown("*LST (Land Surface Temperature) measures how hot the land surface is. Lower temperatures often suggest better vegetation cover or less urban heat.*")
+    st.line_chart(df2[[c for c in df2.columns if "LST" in c]])
+    st.subheader("Gross Primary Productivity Over Time")
+    st.markdown("*GPP (Gross Primary Productivity) estimates how much carbon plants absorb via photosynthesis. Higher GPP indicates more plant growth and ecosystem productivity.*")
+    st.line_chart(df2[[c for c in df2.columns if "GPP" in c]])
+
+    # LST/GPP download
+    csv_lst_gpp = df2.reset_index().to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download LST & GPP Data as CSV",
+        data=csv_lst_gpp,
+        file_name="lst_gpp_timeseries.csv",
+        mime="text/csv"
+    )

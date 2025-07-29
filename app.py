@@ -200,7 +200,7 @@ features = ["annual_temp_c", "annual_precip_mm", "elevation_m"]
 df_pl = df_pl.dropna(subset=features)
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(df_pl[features])
-nn = NearestNeighbors(n_neighbors=3, metric="euclidean")
+nn = NearestNeighbors(n_neighbors=1, metric="euclidean")
 nn.fit(X_scaled)
 
 input_scaled = scaler.transform(
@@ -208,16 +208,14 @@ input_scaled = scaler.transform(
 )
 dist, idx = nn.kneighbors(input_scaled)
 
-# Get top 3 similar protected areas
-top3 = df_pl.iloc[idx[0]].copy()
-top3["distance"] = dist[0]
+# Get best similar protected area
+best = df_pl.iloc[idx[0][0]].copy()
+best["distance"] = dist[0][0]
 
-# Define 'best' as the top match
-best = top3.iloc[0]
+# Display best match
+st.subheader("Best Similar Protected Land")
+st.table(pd.DataFrame([best])[['NAME', 'lat', 'lon'] + features + ['AREA_KM2', 'distance']])
 
-# Display all top 3
-st.subheader("Top 3 Similar Protected Lands")
-st.table(top3[['NAME', 'lat', 'lon'] + features + ['AREA_KM2', 'distance']])
 
 # Map visualization of the best one only
 map_df = pd.DataFrame([best]).rename(columns={"lat": "latitude", "lon": "longitude"})

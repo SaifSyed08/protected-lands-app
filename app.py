@@ -10,15 +10,15 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 import pydeck as pdk
 import ee
-
-# Initialize Earth Engine using temporary credentials file
-if not ee.data._initialized:
-    service_account = st.secrets.get("GEE_SERVICE_ACCOUNT")
-    key_dict = json.loads(st.secrets.get("GEE_PRIVATE_KEY"))
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:
-        json.dump(key_dict, tmp_file)
-        tmp_file.flush()
-        credentials = ee.ServiceAccountCredentials(service_account, tmp_file.name)
+# Initialize Earth Engine only if not already initialized
+try:
+    ee.Initialize()
+except Exception:
+    service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
+    key_dict = json.loads(st.secrets["GEE_PRIVATE_KEY"])
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+        json.dump(key_dict, f)
+        credentials = ee.ServiceAccountCredentials(service_account, f.name)
         ee.Initialize(credentials)
 
 # Page configuration

@@ -12,7 +12,10 @@ import pydeck as pdk
 import ee
 
 # Initialize Earth Engine only if not already initialized
-if not ee.isInitialized():
+# Initialize Earth Engine safely (compatible with all versions)
+try:
+    ee.Initialize()
+except Exception:
     service_account = st.secrets["GEE_SERVICE_ACCOUNT"]
     key_dict = json.loads(st.secrets["GEE_PRIVATE_KEY"])
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:

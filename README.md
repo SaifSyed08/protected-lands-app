@@ -1,58 +1,60 @@
-# 🌎 Protected Lands Analysis App 
+# 🌎 Protected Lands App
 
 ## Overview
 
-One of the questions that increasingly interests me is how we can represent complex real-world systems in a way that makes reasoning possible.
+A central challenge in scientific inference is constructing meaningful comparisons.
 
-During a research project at the University of Texas Center for Space Research, I explored this question in an environmental context.
+When evaluating whether protected status improves ecological outcomes, observed differences between two locations may be driven by underlying environmental conditions rather than protection itself. Comparing a temperate forest to a desert, for example, reveals little about the effect of conservation policy because the ecosystems are fundamentally different.
 
-Suppose we are given an arbitrary location on Earth. Can we identify a protected ecosystem that is environmentally similar, not because it is geographically nearby, but because it shares similar climatic and ecological characteristics?
+To address this problem, our research sought to identify ecologically comparable protected lands that could serve as meaningful controls when assessing ecological health indicators.
 
-Answering that question requires more than geographic search. It requires defining what "similar" means, constructing a representation of environmental conditions, and building a retrieval system capable of searching that representation space.
-
-To explore this problem, I developed an ecological analog discovery platform that maps locations into an environmental feature space and retrieves the most similar protected land from a nationwide database.
+I developed the Protected Lands App to automate this process. Given any geographic location, the system identifies the most environmentally similar protected land and generates multi-year satellite-data comparisons between them.
 
 ## Framing the Problem
 
-Environmental systems are high-dimensional.
+The key question was:
 
-Temperature, precipitation, elevation, vegetation dynamics, productivity, and water flux all interact to shape ecosystem behavior. Geographic distance alone is often a poor proxy for ecological similarity.
+> How can ecological similarity be represented quantitatively?
 
-The core challenge therefore became:
+Environmental systems are inherently multidimensional. Temperature, precipitation, elevation, vegetation dynamics, ecosystem productivity, and water flux all contribute to ecosystem behavior.
 
-> How can environmental similarity be represented quantitatively?
-
-Rather than treating locations as coordinates on a map, I represented them as vectors of environmental characteristics and searched for similarity within that representation.
+Rather than treating locations as simple geographic coordinates, I represented them as vectors of environmental characteristics. The challenge then became identifying which locations occupied similar positions within this environmental feature space.
 
 ## Approach
 
-The system constructs environmental representations using:
+The system first retrieves long-term climate and geographic characteristics for a user-provided location, including:
 
-* Long-term temperature averages
-* Long-term precipitation averages
+* Average annual temperature
+* Annual precipitation
 * Elevation
 
-After standardizing these variables, locations are embedded into a shared feature space. Similarity search is then performed using nearest-neighbor retrieval to identify the most environmentally comparable protected area.
+Because these variables exist on different scales, direct comparison would produce misleading results. To create a common representation, each feature is standardized using **z-score normalization**, transforming the variables into comparable units relative to their distributions.
 
-Once an analog is retrieved, the platform automatically gathers decades of satellite observations through Google Earth Engine and generates comparative analyses of:
+After normalization, locations are embedded into a shared environmental feature space. Similarity is then computed using nearest-neighbor search, allowing the system to retrieve the protected land whose environmental characteristics most closely match the input location.
 
-* Vegetation dynamics (NDVI)
-* Evapotranspiration
-* Land Surface Temperature
-* Gross Primary Productivity
+Once a match is identified, the platform automatically retrieves more than two decades of satellite observations through Google Earth Engine and generates comparative time-series analyses for:
 
-This transforms a retrieval problem into a scientific hypothesis-generation tool. Users can move beyond identifying similar locations and begin evaluating whether those locations exhibit comparable ecological behavior over time.
+* NDVI (vegetation health)
+* Evapotranspiration (ET)
+* Land Surface Temperature (LST)
+* Gross Primary Productivity (GPP)
 
-## Why This Project Matters To Me
+This enables researchers to move beyond simple geographic comparisons and evaluate whether environmentally similar locations exhibit statistically significant differences in ecological health indicators.
 
-What I found most interesting was that the project resembled a pattern that appears repeatedly throughout machine learning.
+## Impact
 
-Many ML systems can be viewed as answering a simple question:
+* Automated ecological analog identification for environmental research workflows
+* Enabled controlled comparisons between arbitrary locations and protected lands
+* Integrated climate, elevation, and remote-sensing datasets into a unified analytical pipeline
+* Generated multi-decade satellite-data comparisons through a single query
+* Supported research conducted through the University of Texas Center for Space Research
 
-> Given a representation of an object, how can we retrieve or reason about other objects that are meaningfully similar?
+## Why This Project Interested Me
 
-Recommendation systems, retrieval systems, scientific search, representation learning, and modern AI agents all rely on this idea.
+What fascinated me most about this project was that it transformed a scientific question into a representation problem.
 
-This project explored that same principle in an environmental setting. The domain was ecology, but the underlying challenge was representation, retrieval, and reasoning under uncertainty.
+The challenge was not collecting more data. The challenge was determining how to represent environmental systems in a way that makes meaningful comparison possible.
 
-Working on the project strengthened my interest in machine learning because it demonstrated how carefully chosen representations can transform a complex real-world problem into something computationally tractable.
+That idea appears repeatedly throughout machine learning. Recommendation systems, retrieval systems, scientific search, and modern AI systems all depend on constructing useful representations and identifying meaningful similarity within them.
+
+Although this project was developed in an environmental science context, it introduced me to many of the concepts that continue to draw me toward machine learning research: representation, retrieval, similarity, and using data-driven methods to reason about complex real-world systems.

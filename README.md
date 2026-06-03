@@ -2,13 +2,11 @@
 
 ## Overview
 
-A central challenge in scientific inference is constructing meaningful comparisons.
+For any scientific study, it is important to control for confounding variables. When evaluating whether protected status improves ecological outcomes, comparing two environmentally different locations can lead to misleading conclusions.
 
-When evaluating whether protected status improves ecological outcomes, observed differences between two locations may be driven by underlying environmental conditions rather than protection itself. Comparing a temperate forest to a desert, for example, reveals little about the effect of conservation policy because the ecosystems are fundamentally different.
+To address this challenge, our research sought to match any location to the most ecologically similar protected land based on climate and environmental characteristics. By identifying appropriate ecological analogs, we could create more meaningful comparisons when assessing whether protected areas exhibit statistically significant differences in indicators such as vegetation health, productivity, temperature, and evapotranspiration.
 
-To address this problem, our research sought to identify ecologically comparable protected lands that could serve as meaningful controls when assessing ecological health indicators.
-
-I developed the Protected Lands App to automate this process. Given any geographic location, the system identifies the most environmentally similar protected land and generates multi-year satellite-data comparisons between them.
+I developed the Protected Lands App to automate this process. The platform retrieves climate and elevation characteristics for a user-provided location, normalizes those variables using z-scores, and identifies the most similar protected land using nearest-neighbor search. It then automatically generates multi-year satellite-data comparisons to support downstream statistical analysis.
 
 ## Framing the Problem
 
